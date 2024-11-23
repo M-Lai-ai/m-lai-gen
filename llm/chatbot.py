@@ -4,6 +4,7 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime
 import json
+from .llm import LLM
 
 @dataclass
 class Entity:
@@ -25,52 +26,57 @@ class Entity:
             name=data["name"],
             attributes=data["attributes"]
         )
-        entity.created_at = datetime.fromisoformat(data["created_at"])
+        if "created_at" in data:
+            entity.created_at = datetime.fromisoformat(data["created_at"])
         return entity
 
 @dataclass
-class Message:
-    """Represents a message in the conversation."""
-    role: str  # 'user' or 'assistant'
-    content: str
-    timestamp: datetime = datetime.now()
+class HistoryEntry:
+    """Represents a single conversation entry in the history."""
+    timestamp: datetime
+    query: str
+    response: str
+    metadata: Optional[Dict] = None
     
     def to_dict(self) -> Dict:
         return {
-            "role": self.role,
-            "content": self.content,
-            "timestamp": self.timestamp.isoformat()
+            "timestamp": self.timestamp.isoformat(),
+            "query": self.query,
+            "response": self.response,
+            "metadata": self.metadata or {}
         }
     
     @classmethod
-    def from_dict(cls, data: Dict) -> 'Message':
-        message = cls(
-            role=data["role"],
-            content=data["content"]
+    def from_dict(cls, data: Dict) -> 'HistoryEntry':
+        return cls(
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            query=data["query"],
+            response=data["response"],
+            metadata=data.get("metadata", {})
         )
-        message.timestamp = datetime.fromisoformat(data["timestamp"])
-        return message
 
 class Chatbot:
     def __init__(
         self,
-        llm,
+        llm: LLM,
         system_prompt: Optional[str] = None,
         context: Optional[str] = None,
         max_history: int = 10,
-        entities_file: str = "entities.json",
-        history_file: str = "chat_history.json"
+        entities_file: str = "chatbot_entities.json",
+        history_file: str = "chatbot_history.json",
+        verbose: bool = False
     ):
         """
-        Initialize the chatbot.
+        Initialize Chatbot.
         
         Parameters:
         - llm: LLM instance for generating responses
-        - system_prompt: System prompt to guide the bot's behavior
-        - context: Additional context for the conversation
+        - system_prompt: System prompt to guide bot behavior
+        - context: Additional context for conversations
         - max_history: Maximum number of messages to keep in history
         - entities_file: File to store entities
         - history_file: File to store chat history
+        - verbose: Whether to print detailed information
         """
         self.llm = llm
         self.system_prompt = system_prompt or "You are a helpful assistant."
@@ -78,66 +84,67 @@ class Chatbot:
         self.max_history = max_history
         self.entities_file = entities_file
         self.history_file = history_file
-        
-        self.history: List[Message] = []
-        self.entities: Dict[str, Entity] = {}
+        self.verbose = verbose
         
         # Load existing data
-        self._load_entities()
-        self._load_history()
-    
-    def _load_entities(self):
+        self.entities = self._load_entities()
+        self.history = self._load_history()
+        
+    def _load_entities(self) -> Dict[str, Entity]:
         """Load entities from file."""
         try:
             with open(self.entities_file, 'r') as f:
                 data = json.load(f)
-                self.entities = {
+                return {
                     name: Entity.from_dict(entity_data)
                     for name, entity_data in data.items()
                 }
-        except FileNotFoundError:
-            self.entities = {}
-    
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+            
     def _save_entities(self):
         """Save entities to file."""
         with open(self.entities_file, 'w') as f:
             json.dump(
-                {name: entity.to_dict() for name, entity in self.entities.items()},
+                {
+                    name: entity.to_dict()
+                    for name, entity in self.entities.items()
+                },
                 f,
                 indent=2
             )
-    
-    def _load_history(self):
+            
+    def _load_history(self) -> List[HistoryEntry]:
         """Load chat history from file."""
         try:
             with open(self.history_file, 'r') as f:
                 data = json.load(f)
-                self.history = [Message.from_dict(msg_data) for msg_data in data]
-        except FileNotFoundError:
-            self.history = []
-    
+                return [HistoryEntry.from_dict(entry) for entry in data]
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+            
     def _save_history(self):
         """Save chat history to file."""
         with open(self.history_file, 'w') as f:
             json.dump(
-                [msg.to_dict() for msg in self.history],
+                [entry.to_dict() for entry in self.history],
                 f,
                 indent=2
             )
-    
+            
     def add_entity(self, name: str, attributes: Dict) -> Entity:
         """Add a new entity."""
-        entity = Entity(name, attributes)
+        entity = Entity(name=name, attributes=attributes)
         self.entities[name] = entity
         self._save_entities()
         return entity
-    
+        
     def get_entity(self, name: str) -> Optional[Entity]:
         """Get entity by name."""
         return self.entities.get(name)
-    
-    def _build_prompt(self, user_input: str) -> str:
-        """Build the complete prompt including context and history."""
+        
+    def _create_prompt(self, query: str) -> str:
+        """Create complete prompt with context and history."""
         prompt_parts = []
         
         # Add system prompt
@@ -149,51 +156,59 @@ class Chatbot:
             prompt_parts.append(f"Context: {self.context}\n")
         
         # Add relevant history
-        for msg in self.history[-self.max_history:]:
-            prompt_parts.append(f"{msg.role.capitalize()}: {msg.content}")
+        if self.history:
+            prompt_parts.append("Previous conversation:")
+            for entry in self.history[-self.max_history:]:
+                prompt_parts.extend([
+                    f"User: {entry.query}",
+                    f"Assistant: {entry.response}"
+                ])
+            prompt_parts.append("")
         
-        # Add current user input
-        prompt_parts.append(f"User: {user_input}")
+        # Add current query
+        prompt_parts.append(f"User: {query}")
         
         return "\n".join(prompt_parts)
-    
-    def chat(self, user_input: str) -> str:
+        
+    def chat(self, query: str) -> str:
         """
         Process user input and generate response.
         
         Parameters:
-        - user_input: User's message
+        - query: User's message
         
         Returns:
         - str: Assistant's response
         """
-        # Add user message to history
-        self.history.append(Message("user", user_input))
+        if self.verbose:
+            print(f"\nProcessing query: {query}")
         
-        # Generate complete prompt
-        prompt = self._build_prompt(user_input)
+        # Create complete prompt
+        prompt = self._create_prompt(query)
         
-        # Get response from LLM
+        # Generate response
         response = self.llm.generate(prompt)
         
-        # Add assistant response to history
-        self.history.append(Message("assistant", response))
-        
-        # Save updated history
+        # Save to history
+        entry = HistoryEntry(
+            timestamp=datetime.now(),
+            query=query,
+            response=response
+        )
+        self.history.append(entry)
         self._save_history()
         
-        return response
-    
-    def get_history(self) -> List[Dict]:
-        """
-        Get conversation history.
+        if self.verbose:
+            print(f"Generated response: {response}")
         
-        Returns:
-        - List of message dictionaries
-        """
-        return [msg.to_dict() for msg in self.history]
-    
+        return response
+        
+    def get_history(self) -> List[HistoryEntry]:
+        """Get chat history."""
+        return self.history
+        
     def clear_history(self):
         """Clear chat history."""
         self.history = []
         self._save_history()
+
