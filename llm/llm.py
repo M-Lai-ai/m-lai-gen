@@ -50,7 +50,7 @@ class LLM:
 
         elif self.provider == "anthropic":
             self.api_key = os.getenv("ANTHROPIC_API_KEY")
-            self.url = "https://api.anthropic.com/v1/complete"
+            self.url = "https://api.anthropic.com/v1/messages"
             if not self.api_key:
                 raise ValueError("Anthropic API key missing in environment variables.")
 
