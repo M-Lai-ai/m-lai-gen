@@ -25,7 +25,7 @@ def main():
         },
         {
             "provider": "anthropic",
-            "model": "claude-v1",
+            "model": "claude-3-5-sonnet-20241022",
             "params": {
                 "temperature": 0.7,
                 "max_tokens": 1500,
@@ -34,7 +34,7 @@ def main():
         },
         {
             "provider": "mistral",
-            "model": "mistral-model-1",
+            "model": "mistral-small-latest",
             "params": {
                 "temperature": 0.7,
                 "max_tokens": 1500,
