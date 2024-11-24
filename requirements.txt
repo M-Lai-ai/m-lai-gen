@@ -1,2 +1,6 @@
 requests
 python-dotenv
+openai 
+anthropic 
+cohere 
+tqdm
